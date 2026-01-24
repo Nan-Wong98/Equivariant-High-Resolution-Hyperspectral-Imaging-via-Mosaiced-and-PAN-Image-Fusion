@@ -3,8 +3,6 @@ import torch.nn as nn
 import math
 import numpy as np
 import utils
-from neighborhood_attention import NATLayer  # Neighbourhood Attention Transformer
-from neighborhood_attention import Channel_Layernorm
 
 class Res(nn.Module):
     def __init__(self, channels=32):

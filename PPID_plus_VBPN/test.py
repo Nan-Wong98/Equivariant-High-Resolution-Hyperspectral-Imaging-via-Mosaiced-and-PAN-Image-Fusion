@@ -46,7 +46,7 @@ def main(args):
         fused_names.sort()
         gt_names.sort()
 
-        psnr_avg, ssim_avg, sam_avg, ergas_avg = 0, 0, 0, 0
+        psnr_avg, ssim_avg, sam_avg, ergas_avg, q2n_avg = 0, 0, 0, 0, 0
         for mosaic_name, pan_name, fused_name, gt_name in tqdm.tqdm(tzip(mosaic_names, pan_names, fused_names, gt_names)):
             mosaic = scio.loadmat(os.path.join(mosaic_path, mosaic_name))["mosaic"]
             pan = scio.loadmat(os.path.join(pan_path, pan_name))["pan"]
@@ -63,16 +63,21 @@ def main(args):
             ssim_avg += quality_index.calc_ssim(gt_tensor, fused_tensor).item()
             sam_avg += quality_index.calc_sam(gt_tensor, fused_tensor).item()
             ergas_avg += quality_index.calc_ergas(gt_tensor, fused_tensor).item()
-
+            if gt_tensor.shape[-1] > 1000 and gt_tensor.shape[-2] > 1000:
+                q2n_avg += quality_index.calc_q2n(gt_tensor[0], fused_tensor[0], Q_blocks_size=256, Q_shift=128)[0].item()
+            else: 
+                q2n_avg += quality_index.calc_q2n(gt_tensor[0], fused_tensor[0], Q_blocks_size=64, Q_shift=32)[0].item()
         psnr_avg /= len(mosaic_names)
         ssim_avg /= len(mosaic_names)
         sam_avg /= len(mosaic_names)
         ergas_avg /= len(mosaic_names)
+        q2n_avg /= len(mosaic_names)
         
         print("PSNR: ", psnr_avg,
               "SSIM: ", ssim_avg,
               "SAM: ", sam_avg,
               "ERGAS: ", ergas_avg,
+              "Q2n: ", q2n_avg,
               )
          
     elif args.real_world == True:

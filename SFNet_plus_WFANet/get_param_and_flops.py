@@ -1,0 +1,167 @@
+import argparse
+import torch.nn as nn
+import torch
+from flops_counter import add_flops_counting_methods, flops_to_string, get_model_parameters_number
+from model import SFNet, HWViT
+import time
+import utils
+
+def get_param_and_flops_of_each_layer(net, net_name, params, flops, memory):
+    keys = list(net._modules.keys())
+    if keys == []:
+        if isinstance(net, torch.nn.Conv2d) or isinstance(net, torch.nn.ReLU) \
+        or isinstance(net, torch.nn.PReLU) or isinstance(net, torch.nn.ELU) \
+        or isinstance(net, torch.nn.LeakyReLU) or isinstance(net, torch.nn.ReLU6) \
+        or isinstance(net, torch.nn.Linear) or isinstance(net, torch.nn.MaxPool2d) \
+        or isinstance(net, torch.nn.AvgPool2d) or isinstance(net, torch.nn.BatchNorm2d) \
+        or isinstance(net, torch.nn.Upsample) or isinstance(net, torch.nn.ConvTranspose2d):
+            params_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
+            param_this_layer = str(params_num)
+            if params_num // 10 ** 6 > 0:
+                param_this_layer = str(round(params_num / 10 ** 6, 2)) + 'M'
+            elif params_num // 10 ** 3:
+                param_this_layer = str(round(params_num / 10 ** 3, 2)) + 'k'
+            kernel_size = str(tuple(net.weight.shape[-2:])) if hasattr(net, 'weight') else ''
+            stride = str(net.stride) if hasattr(net, 'stride') else ''
+            input_shape = str(tuple(net.input_shape)) if hasattr(net, 'input_shape') else ''
+            output_shape = str(tuple(net.output_shape)) if hasattr(net, 'output_shape') else ''
+            module_type = str(type(net)).split('.')[-1][:-2]
+            mem = str(net.__mem__ // 1e6) + "MB" if hasattr(net, '__mem__') else ''
+            print('{:<50}{:<20}{:<30}{:<25}{:<15}{:<10}{:<10}{:<10}{:<10}'.format(net_name, module_type, input_shape,
+                                                                                  output_shape, kernel_size, stride,
+                                                                                  param_this_layer,
+                                                                                  flops_to_string(net.__flops__), mem))
+            params.append(params_num)
+            flops.append(net.__flops__)
+            memory.append(net.__mem__)
+    else:
+        for key in keys:
+            get_param_and_flops_of_each_layer(net._modules[key],
+                                              net_name=net_name + '.' + key,
+                                              params=params,
+                                              flops=flops,
+                                              memory=memory)
+
+# for SFNet, PanGAN
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='')
+    args = parser.parse_args()
+    args.num_bands = 16
+    args.msfa_size = 4
+    args.spatial_ratio = 2
+    demosaic_net = SFNet(args).cuda()
+    ps_net = HWViT(16, 1, 32, 32, 8, 0.085)
+    ps_net = ps_net.cuda()
+    batch_size = 1
+
+    # demosaic
+    mosaic = torch.FloatTensor(batch_size, 1, 1020, 1104).cuda()
+
+    model = add_flops_counting_methods(demosaic_net)
+    model.eval().start_flops_count()
+    t = time.time()
+    with torch.no_grad():
+        demosaic = demosaic_net(mosaic)
+    params, flops, memory = [], [], []
+    print(
+        '{:<50}{:<20}{:<30}{:<25}{:<15}{:<10}{:<10}{:<10}{:<10}'.format('module', 'type', 'input_shape', 'output_shape',
+                                                                        'kernel', 'stride', 'params', 'flops', 'mem'))
+    get_param_and_flops_of_each_layer(model, '', params, flops, memory)
+    demosaic_params, demosaic_flops, demosaic_mem = 0, 0, 0
+    for param in params:
+        demosaic_params += param
+    if demosaic_params // 10 ** 6 > 0:
+        demosaic_params = str(round(demosaic_params / 10 ** 6, 2)) + 'M'
+    elif demosaic_params // 10 ** 3:
+        demosaic_params = str(round(demosaic_params / 10 ** 3, 2)) + 'k'
+    for flop in flops:
+        demosaic_flops += flop
+    for mem in memory:
+        demosaic_mem += mem
+
+    # pansharpening
+    """
+    As this pansharpening network costs too much memory resource my device can' t afford,
+    I decide to comute the FLOPs manually. Fruthermore, the inference time is not strictly
+    correct since I use the utils.generate_patch function here.
+    Manual computation process:
+        
+    Given LRMS (B, C, H//2, W//2) and PAN (B, 1, H, W) image:
+    1. pan_raise_channel -> (25 * pan_target_channel + 9 * pan_target_channel**2) * B * H * W
+    2. lms -> 9 * B * C**2 * H * W
+    3. lms_raise_channel -> (25 * C * ms_target_channel + 9 * ms_target_channel**2) * B * H * W
+    4. L_MWiT_block
+        4.1 DWT_2D -> B * pan_target_channel * H * W
+        4.2 mlp -> ms_target_channel**2 * B * H * W / 4
+        4.3 Attention -> (6 * ms_target_channel**2 + 2 * ms_target_channel * (H*W/16)) * B * H * W / 16
+        4.4 conv_idwt_up -> B * ms_target_channel * H * W
+        4.5 conv_idwt_pan -> B * pan_target_channel * H * W
+        4.6 conv_x, conv_v -> 9 * B * ms_target_channel**2 * H * W / 8
+        4.7 resblock_1 -> 4.5 * B * ms_target_channel**2 * H * W
+    5. F_MWiT
+        5.1 s_mwit -> FLOPs of L_MWiT_block * 4
+        5.2 mlp -> ms_target_channel**2 * B * H * W
+        5.3 resblock -> 4.5 * B * ms_target_channel**2 * H * W * 4
+    6. reduce_channel -> 9 * (ms_target_channel**2 + ms_target_channel*L_up_channel + L_up_channel**2) * B * H * W
+    """
+
+    def FLOPs_cal(B, H, W, C, ms_target_channel, pan_target_channel):
+        flops = 0
+        # pan_raise_channel
+        flops += (25 * pan_target_channel + 9 * pan_target_channel**2) * B * H * W
+        # lms
+        flops += 9 * B * C**2 * H * W
+        # lms_raise_channel
+        flops += (25 * C * ms_target_channel + 9 * ms_target_channel**2) * B * H * W
+        # L_MWiT_block
+        flops += B * pan_target_channel * H * W
+        flops += ms_target_channel**2 * B * H * W / 4
+        flops += (6 * ms_target_channel**2 + 2 * ms_target_channel * (H*W/16)) * B * H * W / 16
+        flops += B * ms_target_channel * H * W
+        flops += B * pan_target_channel * H * W
+        flops += 9 * B * ms_target_channel**2 * H * W / 8
+        flops += 4.5 * B * ms_target_channel**2 * H * W
+        # F_MWiT
+        flops += B * pan_target_channel * H * W *4
+        flops += ms_target_channel**2 * B * H * W
+        flops += (6 * ms_target_channel**2 + 2 * ms_target_channel * (H*W/16)) * B * H * W / 4
+        flops += B * ms_target_channel * H * W * 4
+        flops += B * pan_target_channel * H * W * 4
+        flops += 9 * B * ms_target_channel**2 * H * W / 2
+        flops += 4.5 * B * ms_target_channel**2 * H * W * 4
+        # 5.2 mlp
+        flops += ms_target_channel**2 * B * H * W * 4
+        # 5.3 resblock
+        flops += 4.5 * B * ms_target_channel**2 * H * W * 16
+        # reduce_channel
+        flops += 9 * (ms_target_channel**2 + ms_target_channel*C + C**2) * B * H * W * 4
+
+        return flops
+
+    pan = torch.FloatTensor(batch_size, 1, 2040, 2208).cuda()
+
+    model = add_flops_counting_methods(ps_net)
+    model.eval().start_flops_count()
+    hrms = utils.generate_patch(demosaic, pan, ps_net, size=64, recon_size=32, ratio=2)
+    params, flops, memory = [], [], []
+    print(
+        '{:<50}{:<20}{:<30}{:<25}{:<15}{:<10}{:<10}{:<10}{:<10}'.format('module', 'type', 'input_shape', 'output_shape',
+                                                                        'kernel', 'stride', 'params', 'flops', 'mem'))
+    get_param_and_flops_of_each_layer(model, '', params, flops, memory)
+    ps_params, ps_flops, ps_mem = 0, 0, 0
+    for param in params:
+        ps_params += param
+    if ps_params // 10 ** 6 > 0:
+        ps_params = str(round(ps_params / 10 ** 6, 2)) + 'M'
+    elif ps_params // 10 ** 3:
+        ps_params = str(round(ps_params / 10 ** 3, 2)) + 'k'
+    ps_flops = FLOPs_cal(batch_size, 1020, 1104, args.num_bands, 32, 32)
+    infer_time = time.time() - t
+
+    print('Demosai_net Flops:  {}'.format(flops_to_string(demosaic_flops / batch_size)))
+    print('Demosai_net Params: {}'.format(demosaic_params))
+    print('Demosai_net Memory usage: {} GB'.format(demosaic_mem / batch_size / 1e9))
+    print('Ps_Net Flops:  {}'.format(flops_to_string(ps_flops / batch_size)))
+    print('Ps_Net Params: {}'.format(ps_params))
+    print('Ps_Net Memory usage: {} GB'.format(ps_mem / batch_size / 1e9))
+    print('Infer time: {}s'.format(infer_time / batch_size))
