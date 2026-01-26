@@ -122,7 +122,8 @@ If you find this code or our dataset useful for your research, please verify str
   journal={IEEE Transactions on Image Processing},
   title={Equivariant High-Resolution Hyperspectral Imaging via Mosaiced and PAN Image Fusion},
   year={2026},
-  doi={10.1109/TIP.2026.3657219}
+  doi={10.1109/TIP.2026.3657219},
+  publisher={IEEE}
 }
 ```
 
