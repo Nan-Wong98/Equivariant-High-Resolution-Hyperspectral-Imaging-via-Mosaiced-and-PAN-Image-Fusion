@@ -91,6 +91,14 @@ Among the total 200 images, we strictly follow the split of **160 images for tra
 </details>
 
 ## ⚙️ Requirements
+
+Install dependencies via:
+```bash
+pip install -r requirements.txt
+````
+
+<details>
+
 *   h5py==3.15.1
 *   Imath==0.0.2
 *   matplotlib==3.10.8
@@ -103,10 +111,7 @@ Among the total 200 images, we strictly follow the split of **160 images for tra
 *   torchvision==0.25.0+cu126
 *   tqdm==4.67.1
 
-Install dependencies via:
-```bash
-pip install -r requirements.txt
-````
+</details>
 
 ## 📝 Citation
 
