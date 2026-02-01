@@ -1,6 +1,6 @@
 # Equivariant High-Resolution Hyperspectral Imaging via Mosaiced and PAN Image Fusion (EFN)
 
-[![Paper](https://img.shields.io/badge/Paper-arXiv-red)](这里放你的论文链接)
+[![IEEE Xplore](https://img.shields.io/badge/IEEE_Xplore-Paper-00629B?style=flat-square&logo=ieee&logoColor=white)](https://ieeexplore.ieee.org/document/11367377)
 
 Official PyTorch implementation of the paper: **"Equivariant High-Resolution Hyperspectral Imaging via Mosaiced and PAN Image Fusion (EFN)"**.
 
